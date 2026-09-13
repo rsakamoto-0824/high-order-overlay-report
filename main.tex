@@ -1,0 +1,699 @@
+% Overleaf: Compiler = LuaLaTeX / Main document = main.tex
+% このファイルだけでコンパイルできます。外部画像・bibファイルは不要です。
+% 著者名は次の行を編集してください。
+\newcommand{\AuthorName}{著者名（記入）}
+\documentclass[11pt,a4paper]{ltjsarticle}
+\usepackage{lmodern}
+\usepackage[margin=25mm]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs,tabularx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.18}
+\setcounter{tocdepth}{2}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\VIF}{\operatorname{VIF}}
+\newcommand{\RMSE}{\operatorname{RMSE}}
+\newcommand{\rank}{\operatorname{rank}}
+\newcommand{\diag}{\operatorname{diag}}
+\newcommand{\todo}{\textbf{未評価}}
+\newcommand{\ReportTitle}{リソグラフィー工程におけるShot高次重ね合わせ補正}
+\hypersetup{pdftitle={リソグラフィー工程におけるShot高次重ね合わせ補正}}
+
+\begin{document}
+
+\hypersetup{pageanchor=false}
+\begin{titlepage}
+  \centering
+  \vspace*{35mm}
+  {\LARGE\bfseries \ReportTitle\par}
+  \vspace{12mm}
+  {\Large VIFによる項選択と\par ロバスト回帰・正則化の検討\par}
+  \vspace{35mm}
+  {\large \AuthorName\par}
+  \vfill
+  {\large 技術レポート\par}
+  \vspace{8mm}
+  {\normalsize 文献レビュー・実験計画稿\par}
+\end{titlepage}
+
+\hypersetup{pageanchor=true}
+\pagenumbering{roman}
+\tableofcontents
+\clearpage
+\pagenumbering{arabic}
+
+\section{序論}
+\subsection{プロセス微細化と重ね合わせにおける動向}
+半導体製造のリソグラフィー工程では、異なる層のパターンを所定の位置関係で形成する必要がある。
+その相対的な位置ずれを重ね合わせ誤差（overlay error、以下OVL）と呼ぶ。
+微細化に加え、Gate-All-Around構造や裏面電源配線などの導入により、
+複雑な積層構造と工程由来の変形を考慮した計測・補正が重要になっている。
+Katzらは、これらの構造変化と、計測の高密度化、モデル化、フィードフォワードを関連づけて論じている\cite{katz2026}。
+OVLはパターン端位置誤差（edge placement error、EPE）の一要因であり、
+線幅変動やパターン形状の非対称性とは区別して管理する必要がある。
+
+要求精度が厳しくなるほど、計測装置の単一の精度指標だけでは補正性能を説明できなくなる。
+計測誤差が推定した補正係数へどの程度伝わるかは、測定点の配置と回帰モデルに依存する。
+KleinとGutmanは、サブナノメートル領域に向けたOVL計測仕様の課題として、
+この誤差伝播とサンプリングの関係を取り上げている\cite{klein2026}。
+したがって、高次補正では表現できる歪みの種類を増やすと同時に、係数推定の安定性を確保することが課題となる。
+
+\subsection{近年の高次補正と本検討の目的}
+高次補正は、並進、回転、倍率などの低次成分だけで説明できない空間的な歪みを、
+二次以上の多項式などで表して補正する方法である。
+ウェハ上のShot配置を扱うウェハ成分と、各Shot内部の歪みを扱うShot内成分は異なる。
+本稿の提案・数値実験の対象は、後者の\textbf{Shot内OVLの回帰推定}とする。
+
+Duclauxらは、平均的なShot内歪みに対する高次補正について、測定レイアウトやモデルの選択が
+補正係数のrun-to-run変動に影響することを報告している\cite{nicolas2020}。
+近年は、候補項をすべて採用するだけでなく、検証データに基づいて必要な項を選ぶ検討も進んでいる。
+KLAのCherry-pickingは、その一例としてLassoと交差検証を用いる\cite{cherry2025}。
+
+本検討では、分散拡大係数（variance inflation factor、VIF）による候補項の事前選択と、
+ロバスト回帰、L1・L2正則化を組み合わせる。
+測定誤差と異常値を含む条件で、推定係数および未測定位置の補正残差が安定するかを検証する。
+
+\paragraph{本稿の評価状態}
+本稿は文献レビューと数値実験の計画をまとめた原稿である。
+以下の実験条件は提案値であり、1000通りの数値実験は本稿作成時点で実行していない。
+結果表は未評価とし、結論で検討する3項目を事前仮説として示す。
+引用文献の結果と、本検討で今後得る結果を混同しない。
+
+\section{高次補正}
+\subsection{座標、補正係数および回帰計算}
+Shot中心に対するMarkの相対座標を$(x,y)$ [mm]、Shot半幅を$(a,b)$ [mm]とし、
+回帰では無次元座標
+\begin{equation}
+ u=x/a,\qquad v=y/b,\qquad -1\leq u,v\leq 1
+ \label{eq:coordinate}
+\end{equation}
+を用いる。ウェハ中心からの絶対座標は$(\mathrm{shotX}+x,\mathrm{shotY}+y)$であり、
+本稿のShot内座標と区別する。300 mmウェハへ展開する際は、絶対座標の半径が150 mm未満の点を対象とする。
+
+Mark $i$のOVLを$\bm d_i=(d_{i,X},d_{i,Y})^\mathsf T$ [nm]とする。
+基底関数$\bm b_j(u,v)$と補正係数$k_j$を用いると、モデルは
+\begin{equation}
+ \bm d_i=\sum_{j=1}^{p}\bm b_j(u_i,v_i)k_j+\bm\epsilon_i,
+ \qquad \bm d=A\bm k+\bm\epsilon
+ \label{eq:vector}
+\end{equation}
+と表せる。$A\in\R^{2n\times p}$は$n$個のMarkのX・Y成分を積み重ねた設計行列である。
+本稿で用いる公開モデルではX・Y間で係数を共有しないため、軸別に
+$\bm d_q=\Phi_q\bm k_q+\bm\epsilon_q$（$q=X,Y$）と分けて推定できる。
+係数を共有する装置モデルへ拡張するときは、式\eqref{eq:vector}の構造を維持する。
+
+通常の最小二乗法（ordinary least squares、OLS）は
+\begin{equation}
+ \widehat{\bm k}_q=\underset{\bm k_q}{\arg\min}\,
+ \|\bm d_q-\Phi_q\bm k_q\|_2^2
+ \label{eq:ols}
+\end{equation}
+を解く。高次多項式でも、未知係数に対しては線形回帰である。
+列が独立で、応答誤差が平均0、分散$\sigma^2$、互いに独立なら、
+\begin{equation}
+ \operatorname{Var}(\widehat{\bm k}_q)
+ =\sigma^2(\Phi_q^\mathsf T\Phi_q)^{-1}
+ \label{eq:variance}
+\end{equation}
+となる。実装では逆行列を直接作らず、QR分解または特異値分解（SVD）を用いる。
+計測から推定したOVL場を$\widehat{\bm f}$とすると、理想補正を$-\widehat{\bm f}$と定義し、
+補正後残差を$\bm f-\widehat{\bm f}$で評価する。
+実機への入力には、装置固有の符号、単位、感度、補正範囲との対応が別途必要である。
+
+\subsection{論文に基づく事例}
+\subsubsection{高次回帰とモデル変動}
+高次化により、測定点上の残差は小さくなりやすいが、係数の再現性が同時に改善するとは限らない。
+Duclauxらの報告は、Shot内高次モデルを運用するときに、計測配置とモデル構成を含めて
+補正値の変動を評価する必要性を示している\cite{nicolas2020}。
+本検討でも、測定点への当てはまりだけでなく、未測定位置の残差と誤差付与前後の予測変動を調べる。
+
+\subsubsection{KLAによるZernikeモデルの提案}
+JuらのSK hynixとKLA-Tencorによる報告では、ウェハ面内のOVLをZernike多項式でモデル化し、
+XY多項式によるモデルと比較している\cite{ju2016}。
+円形領域におけるスカラー成分の展開は
+\begin{equation}
+ f_q(r,\theta)=\sum_j c_{q,j}Z_j(r,\theta),\qquad 0\leq r<1
+ \label{eq:zernike}
+\end{equation}
+と書ける。Zernike基底は、適切な重みで積分する連続した単位円上では直交性をもつ。
+ただし、実際の離散点、欠測、偏った点配置では、設計行列の列が直交するとは限らない。
+
+同論文では、\textbf{Zernikeを用いたのはウェハ成分であり、Shot内成分はXY基底のiHOPCである}。
+この事例を、矩形Shot内モデルをそのまま円形Zernikeへ置き換えた実証とは解釈しない。
+本稿では、基底の選択により係数の相関と安定性が変わる事例として参照する。
+将来Zernikeを実装する場合は、Fringe番号と正規化規約を明記し、係数はnmで扱う。
+本稿の数値実験ではZernikeをメーカー補正式の代用にしない。
+
+\subsubsection{正則化と項選択の事例}
+Magklarasらは、OVLモデルの多重共線性をVIFで診断し、Ridge回帰をOLSと比較している\cite{magklaras2024}。
+300 mmウェハ工程のデータを対象とし、正則化パラメータは交差検証で選択している。
+結果節ではX方向の99.7百分位残差でRidgeが12層中8層で優れた一方、
+最大残差ではOLSが12層中9層で優れたと記述されている（同論文pp.6--8、図7--8）。
+したがって、この報告は正則化の有用性を検討する根拠になるが、全指標での一律な優位性の根拠にはしない。
+結論節の包括的な優位性の表現は、これらの条件別記述と整合を確認して読む必要がある。
+
+KLAのCherry-pickingでは、Lassoと交差検証によって項を選び、
+選択した項を通常の線形回帰で再推定する構成が示されている\cite{cherry2025}。
+同報告の評価例は合成CDデータおよび量産CD制御であり、
+本稿のShot内OVLに対するHuber回帰やL2正則化の直接的な実証ではない。
+一方、\textbf{項の選択と、選択後の係数推定を分けて設計する}考え方は、本提案と関連する。
+以上は原文の要約であり、論文の図表を転載していない。
+
+\subsection{ASMLおよびNikonの公開補正式}
+\subsubsection{ASML公開論文のモデル：A15}
+HuangらのNanyaとASMLの共著論文は、Shot内高次補正iHOPCと露光ごとの補正CPEを扱う\cite{huang2009}。
+同論文p.3の図2、およびDuclauxらの論文p.2の式1には、総三次20項の表現と、
+そのうち使用しない項が示されている\cite{nicolas2020}。
+本稿では、使用される15項の基底構成を次のように再記する。
+\begin{align}
+ f_X^{\mathrm A}(u,v)
+ &=\widetilde k_1+\widetilde k_3u+\widetilde k_5v
+   +\widetilde k_7u^2+\widetilde k_{11}v^2
+   +\widetilde k_{13}u^3+\widetilde k_{19}v^3,\label{eq:asml-x}\\
+ f_Y^{\mathrm A}(u,v)
+ &=\widetilde k_2+\widetilde k_4v+\widetilde k_6u
+   +\widetilde k_8v^2+\widetilde k_{10}uv+\widetilde k_{12}u^2
+   +\widetilde k_{14}v^3+\widetilde k_{16}uv^2.\label{eq:asml-y}
+\end{align}
+総三次20項のうち、$k_9,k_{15},k_{17},k_{18},k_{20}$は、この公開事例の使用項から除外する。
+A15はX方向7項、Y方向8項である。
+2009年の図は当時の装置に関する記述であり、A15をASMLの現行機すべての仕様とはみなさない。
+
+\subsubsection{Nikon公開特許のモデル：N20}
+Nikonの公開特許JP2010186918Aは、ウェハ成分を除いたShot内誤差について、
+六次20係数のモデル例を式(3)(4)に示している\cite{nikon2010}。
+その基底構成を同じ無次元座標で表すと、
+\begin{align}
+ f_X^{\mathrm N}(u,v)
+ &=\widetilde k_1+\widetilde k_5v+\widetilde k_{11}v^2
+   +\widetilde k_{19}v^3+\widetilde k_{29}v^4
+   +\widetilde k_{41}v^5+\widetilde k_{55}v^6,\label{eq:nikon-x}\\
+ f_Y^{\mathrm N}(u,v)
+ &=\widetilde k_2+\widetilde k_4v+\widetilde k_6u
+   +\widetilde k_8v^2+\widetilde k_{10}uv
+   +\widetilde k_{14}v^3+\widetilde k_{16}uv^2 \notag\\
+ &\quad+\widetilde k_{22}v^4+\widetilde k_{24}uv^3
+   +\widetilde k_{32}v^5+\widetilde k_{34}uv^4
+   +\widetilde k_{44}v^6+\widetilde k_{46}uv^5.\label{eq:nikon-y}
+\end{align}
+N20はX方向7項、Y方向13項である。
+同特許の段落[0071]は、係数を安定に算出するために相関の強い項を除く考え方を示し、
+段落[0072]は重み付き最小二乗法を記述している。
+特許に記載されたモデル例と、特定の量産装置の実装・性能は区別する。
+
+\paragraph{係数の規約と比較の範囲}
+式\eqref{eq:asml-x}--\eqref{eq:nikon-y}の添字は出典の項番号を保持するが、
+$\widetilde k_j$は本稿の無次元座標に対する係数[nm]である。
+元の項が$k_jx^ry^s$なら$\widetilde k_j=k_ja^rb^s$となり、数値をそのまま装置へ転記できない。
+A15とN20は次数、項数および表現空間が異なるため、
+本実験は\textbf{公開された基底構成と推定手法の比較}であり、メーカーの装置性能の順位づけではない。
+
+\subsection{高次補正における回帰の課題}
+\paragraph{異常値}
+マーク認識の不良などにより、一部の観測に大きな誤差が含まれると、
+二乗損失はその点を強く重視する。局所的な異常値がShot全体の補正場を変える可能性がある。
+ただし、実際の局所変形も大きな残差を生むため、大きな残差をすべて計測異常とは扱わない。
+
+\paragraph{測定誤差}
+本稿では、正確な座標で測ったOVL応答に誤差が加わる場合を基本とする。
+この誤差は式\eqref{eq:variance}を通じて係数へ伝わる。
+座標そのものの誤差、工程に固定した測定バイアス、時間相関した誤差は別の問題であり、
+ロバスト回帰だけで補償できるとは限らない。
+
+\paragraph{多重共線性}
+例えば、限られた範囲で観測した$v$と$v^3$は強く相関しうる。
+複数項の組合せによる依存もあり、2列ずつの相関だけでは見落とす場合がある。
+共線性が強いと、大きな正負の係数が互いに相殺して測定値を説明し、
+小さな誤差で係数や未測定位置の予測が大きく変わる。
+
+\paragraph{オーバーフィッティング}
+高自由度のモデルは、再現すべき歪みだけでなく測定ノイズにも追従しうる。
+学習残差を最小化するだけでは、未測定位置の補正性能を保証できない。
+逆に、必要な高次項を除きすぎると、系統的な歪みを表せない過少適合を生む。
+
+\section{提案手法}
+\subsection{VIFによる\texorpdfstring{$k$}{k}パラメータ選定}
+軸別の設計行列から切片を除き、第$j$列を残りの列と切片で補助回帰した決定係数を$R_j^2$とする。
+VIFは
+\begin{equation}
+ \VIF_j=\frac{1}{1-R_j^2}
+ \label{eq:vif}
+\end{equation}
+で定義する\cite{nistvif}。
+ここで$R_j^2$は\textbf{OVLの予測精度ではなく、説明変数同士の補助回帰の決定係数}である。
+切片のVIFは選定指標に含めない。
+測定点配置と基底が固定なら、VIFは1000通りの歪みと測定誤差に対して共通になる。
+
+本稿ではしきい値$\tau=10$を事前設定する。
+これは経験的な診断値であり、補正性能を最大化する普遍的なしきい値ではない。
+項選択の手順を以下に定める。
+\begin{enumerate}
+ \item 定数列、重複列、行列の階数を確認する。数値階数はSVDで、
+ 最大特異値に対する比$10^{-12}$を判定値とする。
+ \item 切片と、各公開モデルに含まれる一次項を保護する。
+ それ以外を削除可能な高次項とする。
+ \item 全非定数項のVIFを計算する。最大値が$\tau$以下なら終了する。
+ \item 削除可能項のうちVIF最大の項を1項削除し、VIFを再計算する。
+ 同値の場合は高い次数を優先し、さらに同じなら大きい$k$番号を削除する。
+ \item 削除可能項がなくても基準を満たさない場合は、未達として記録する。
+\end{enumerate}
+階数不足の場合は、有限のVIFを疑似逆行列で作らない。
+従属する列群を特定し、保護項を残しながら次数・$k$番号の優先規則で従属項を除いてから再評価する。
+保護項だけで階数不足なら、その測定配置でのモデル同定は不可能と判定する。
+
+ここでのVIF選択は、各係数を独立の調整項として扱い、全高次項に強い階層性を課さない。
+装置側で親項の保持や項群の同時設定が必要なら、削除可能集合をその制約に合わせて変更する。
+VIFは信号の重要性を判定しないため、削減後の予測性能を独立に評価する。
+
+\subsection{ロバスト回帰}
+大きな残差の影響を抑えるため、Huber損失\cite{huber1964}を用いる。
+\begin{equation}
+ \rho_\delta(r)=
+ \begin{cases}
+  \frac12r^2, & |r|\leq\delta,\\
+  \delta|r|-\frac12\delta^2, & |r|>\delta.
+ \end{cases}
+ \label{eq:huber}
+\end{equation}
+小さな残差には二乗損失を、大きな残差には線形の損失を適用する。
+Huberの原論文は位置推定に関する基礎文献であり、本稿ではその損失を回帰へ適用する。
+残差を一定の尺度で無次元化し、$\delta=1.345$に固定する。
+この値は生のnm残差に直接適用せず、後述する誤差尺度との組合せで定義する。
+
+反復再重み付けの考え方では、残差$r_i$に対して
+\begin{equation}
+ w_i=
+ \begin{cases}1,& |r_i|\leq\delta,\\
+ \delta/|r_i|,& |r_i|>\delta
+ \end{cases}
+ \label{eq:weight}
+\end{equation}
+の重みを用いる。Huberは点を完全に削除する方法ではない。
+座標誤差や高レバレッジ点への耐性は別途確認する必要がある。
+
+\subsection{正則化}
+Ridge回帰は係数の二乗和に罰則を与えるL2正則化であり、
+共線性のある問題で係数推定を安定化させる方法として提案された\cite{hoerl1970}。
+Lassoは係数の絶対値和に罰則を与えるL1正則化で、
+一部の係数を0にする項選択を伴う\cite{tibshirani1996}。
+L1は相関した項の選択が不安定になる場合があり、
+L2は不要項を厳密に0にすることを目的としない。
+
+選択後の非定数列$\phi_j$を、測定点だけから求めた平均$\bar\phi_j$と
+標準偏差$s_j$で標準化する。
+\begin{equation}
+ Z_{ij}=\frac{\phi_j(u_i,v_i)-\bar\phi_j}{s_j},\qquad
+ s_j^2=\frac1n\sum_i(\phi_j(u_i,v_i)-\bar\phi_j)^2.
+ \label{eq:standardize}
+\end{equation}
+評価点には同じ$\bar\phi_j,s_j$を適用する。
+応答は固定尺度$s_0$ [nm]で割り、$z_i=d_i/s_0$とする。
+軸別の共通目的関数を
+\begin{equation}
+ \min_{\alpha,\bm\beta}\left\{
+  \frac1n\sum_{i=1}^n\rho\bigl(z_i-\alpha-Z_i\bm\beta\bigr)
+  +\lambda_1\|\bm\beta\|_1+\frac{\lambda_2}{2}\|\bm\beta\|_2^2
+ \right\}
+ \label{eq:objective}
+\end{equation}
+とする。切片$\alpha$は罰しない。一次項はVIF削除から保護するが、正則化の対象には含める。
+元の基底への復元は
+\begin{equation}
+ \widetilde k_j=s_0\beta_j/s_j,\qquad
+ \widetilde k_{\mathrm{intercept}}=s_0\alpha-
+ \sum_j\widetilde k_j\bar\phi_j
+ \label{eq:restore}
+\end{equation}
+による。
+
+\subsection{VIF選択・ロバスト回帰・正則化の組合せ}
+全項モデルとVIF削減モデルのそれぞれで、表\ref{tab:estimators}の6通りを比較する。
+VIFは基底と点配置の共線性、Huberは大きな応答残差、正則化は係数の大きさに働く。
+異なる問題への対策であり、併用の効果と過剰な抑制の両方を検証する。
+
+\begin{table}[htbp]
+\centering
+\caption{比較する推定手法。$\ell>0$、$\gamma>0$は固定する正則化強度。}
+\label{tab:estimators}
+\begin{tabular}{llll}
+\toprule
+手法 & 損失$\rho(r)$ & $\lambda_1$ & $\lambda_2$\\
+\midrule
+OLS & $r^2/2$ & 0 & 0\\
+Lasso（L1） & $r^2/2$ & $\ell$ & 0\\
+Ridge（L2） & $r^2/2$ & 0 & $\gamma$\\
+Huber & $\rho_\delta(r)$ & 0 & 0\\
+Huber + L1 & $\rho_\delta(r)$ & $\ell$ & 0\\
+Huber + L2 & $\rho_\delta(r)$ & 0 & $\gamma$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{実験項}
+\subsection{1000通りの高次歪みをもつShotの生成}
+乱数のシードを20260913、生成器をMT19937として、独立な1000通りの歪み場を生成する計画とする。
+実行時には使用ソフトウェア・版、正規乱数の生成法、生成係数も保存し、再現性を確保する。
+これは1000個の実測Shotや、1000枚のウェハを意味しない。
+
+メーカー式に直接乱数係数を与えると、一方のモデルに真値が偏るため、
+真値生成には共通の二変数Legendre多項式を用いる。
+一変数基底$L_r$は、一様測度で$\frac12\int_{-1}^{1}L_r(u)^2\,du=1$となるよう正規化する。
+最大総次数を6とし、Shot $s$の高次歪みを
+\begin{equation}
+ g_{s,q}(u,v)=\sum_{2\leq r+t\leq 6}
+ c_{s,q,rt}L_r(u)L_t(v),\qquad q=X,Y
+ \label{eq:truth}
+\end{equation}
+から生成する。平均・一次成分はこの生成基底では0とし、高次歪みを評価対象にする。
+モデルには並進・一次項を残し、推定時の相関を評価する。
+
+1000通りを、全25高次項を用いる密な場500通りと、軸ごとに25項から5項を
+重複なく一様に選ぶ疎な場500通りに分ける。
+有効な係数を独立に$c_{s,q,rt}\sim N(0,2^{-2(r+t)})$から生成する。
+ここでの疎密はLegendre基底に対する定義であり、メーカーの$k$基底での疎密と同一ではない。
+
+各場を連続矩形領域のベクトルRMSで$A_0=3$ nmにそろえる。
+直交性を用いれば、$G_s^2=\sum_{q,r,t}c_{s,q,rt}^2$として
+\begin{equation}
+ \bm f_s(u,v)=A_0\,\bm g_s(u,v)/G_s
+ \label{eq:amplitude}
+\end{equation}
+となる。これにより評価点の観測値を使わず振幅を決定できる。
+$G_s=0$の場合は再生成する。これらの振幅・係数分布は実工程から推定した値ではない。
+
+\subsection{測定点配置と測定誤差の付与}
+Shot寸法の提案値を$26\times33$ mm（$a=13$ mm、$b=16.5$ mm）とする。
+これは模擬実験の寸法であり、High-NA EUVを含む全装置のShot寸法を代表しない。
+測定点は$u,v\in\{-1,-2/3,-1/3,0,1/3,2/3,1\}$の49点とする。
+N20の六次項を区別するには、少なくとも7種類の$v$座標が必要となる。
+
+評価点は各軸の41個のセル中心
+$u_q=-1+(2q-1)/41$（$q=1,\ldots,41$）の直積から、測定点と一致する中心$(0,0)$を除いた1680点とする。
+評価には誤差を付けない真値を用いる。
+別途、Shot境界の各辺101点からなる重複除去後400点で、境界上の最大残差を確認する。
+境界評価は連続領域全体の最大値を保証するものではない。
+
+通常の少数Mark運用とは区別する。4 Mark/Shotだけでは軸ごとに4個の観測しかなく、
+A15やN20の係数をShotごとに独立同定できない。
+量産適用には、密な計測、複数Shotのプール、共通係数の推定などの設計が必要になる。
+
+観測値は、各軸について
+\begin{equation}
+ d_{s,i,q}=f_{s,q}(u_i,v_i)+\epsilon_{s,i,q}+B_{s,i}\eta_{s,i,q}
+ \label{eq:noise}
+\end{equation}
+とする。$\epsilon\sim N(0,0.5^2)$ [nm]、$B\sim\operatorname{Bernoulli}(0.05)$、
+$\eta\sim N(0,5^2)$ [nm]とし、$B$は同一MarkのX・Yで共有する。
+他の乱数は独立に生成し、すべての手法で同じ誤差実現値を使う。
+表\ref{tab:noise}の条件を同じ1000個の真値に適用する。
+
+\begin{table}[htbp]
+\centering
+\caption{測定誤差条件。数値は実験計画の提案値。}
+\label{tab:noise}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+条件 & 内容\\
+\midrule
+E0 & 誤差なし。モデルの表現不足と罰則による偏りを調べる。\\
+E1 & 正規誤差のみ。式\eqref{eq:noise}で$B=0$とする。\\
+E2 & 正規誤差に5\%のMark単位の外れ値を加える。\\
+\bottomrule
+\end{tabularx}
+\end{table}
+この設計は応答誤差を対象とし、座標誤差、系統誤差、空間相関は扱わない。
+そのため、実工程での計測誤差を完全に再現した実験ではない。
+
+\subsection{ASML・Nikon公開式のVIF算出とパラメータ削減}
+式\eqref{eq:asml-x}--\eqref{eq:nikon-y}から49点の設計行列を作る。
+A15、N20およびそれぞれのVIF削減版A15-V、N20-Vを比較する。
+軸別に列数、階数、標準化行列の条件数、各項のVIF、削除順序、最終採用$k$番号を保存する。
+VIFは点配置ごとに1回計算し、誤差条件や真の歪みを見て項を変更しない。
+
+A15とN20は異なる関数空間をもつ。比較では、各基底で評価真値を最小二乗近似した
+\begin{equation}
+ E^*_{s,q,m}=\min_{\bm k}\sqrt{\frac1M
+ \|\bm f_{s,q}^{\mathrm{eval}}-\Phi_{q,m}^{\mathrm{eval}}\bm k\|_2^2}
+ \label{eq:oracle}
+\end{equation}
+も求める。これはその評価格子における表現不足の下限であり、実運用で得られる推定値ではない。
+真値を使うこの診断は、VIF選択やハイパーパラメータの決定に使用しない。
+削減後にこの下限が悪化した場合は、必要な歪み成分を除いた影響として報告する。
+
+\subsection{ロバスト回帰と正則化演算：固定ハイパーパラメータ}
+表\ref{tab:fixed}の値を実行前に固定し、1000 Shotの評価結果による調整は行わない。
+本計画では最適値探索を実験範囲に含めず、明示した値での比較とする。
+
+\begin{table}[htbp]
+\centering
+\caption{式\eqref{eq:objective}に対応する固定値。}
+\label{tab:fixed}
+\begin{tabularx}{\linewidth}{lX}
+\toprule
+項目 & 設定\\
+\midrule
+応答尺度 & $s_0=0.5$ nm。E0でも同じ尺度を使用。\\
+Huber境界 & $\delta=1.345$。生の残差では0.6725 nmに相当。\\
+L1強度 & $\ell=0.01$。LassoとHuber + L1で共通。\\
+L2強度 & $\gamma=0.01$。RidgeとHuber + L2で共通。\\
+VIFしきい値 & $\tau=10$。全手法に同じ選択結果を使用。\\
+数値収束 & 最適性条件の最大違反$10^{-7}$以下、最大反復10000回。\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+L1とL2に同じ数値を与えても、同じ強さの正則化にはならない。
+また、Huberの損失と二乗損失では罰則との釣合いも変わる。
+したがって、本比較から「最適化したL1より最適化したL2が常に優れる」とは結論しない。
+別の事前校正を行う場合は、1000 Shotとは独立した予備データで値を決め、評価前に固定する。
+
+OLSはQR/SVD、二乗損失のL2は安定な線形方程式解法を使い、
+L1およびHuberを含む問題は式\eqref{eq:objective}を直接解く。
+収束判定には切片の勾配と、L1の劣勾配を含む最適性条件を使う。
+未収束の係数を有効な推定結果に混ぜず、失敗数と該当条件を示す。
+
+\subsection{比較条件と評価指標}
+2基底$\times$2削減状態$\times$6推定手法の24通りを、E0--E2の各条件に適用する。
+同じShot内では真値・測定誤差をそろえ、手法間の対応を保つ。
+密な場と疎な場は分けて集計する。
+
+主指標は、測定点と異なる評価点における軸別の補正後RMSEとする。
+\begin{equation}
+ \RMSE_{s,q,m}=\sqrt{\frac1M\sum_{i=1}^{M}
+ \bigl(f_{s,q}(u_i,v_i)-\widehat f_{s,q,m}(u_i,v_i)\bigr)^2}.
+ \label{eq:rmse}
+\end{equation}
+補助指標として、ベクトル残差の95百分位、境界上の最大ベクトル残差、
+測定点上の残差、無誤差条件E0からの予測変動、収束失敗数を記録する。
+係数変動を比較する場合は、同一の$k$基底・単位・尺度に限定する。
+
+手法$a$に対する手法$b$の改善量を
+\begin{equation}
+ \Delta_{s,q}(a,b)=\RMSE_{s,q,a}-\RMSE_{s,q,b}
+ \label{eq:paired}
+\end{equation}
+と定義し、正の値を改善とする。
+同一Shotの対応差を平均し、Shot単位の再標本化10000回による百分位法で95\%信頼区間を求める。
+密・疎の各集計は500 Shotを単位とし、評価点を独立な実験標本として数えない。
+再標本化用シードは20260914とする。区間は各比較についてのもので、多重比較調整後の区間ではない。
+
+\section{結果}
+\subsection{VIFと採用パラメータ}
+本節は実験後に記入する。表\ref{tab:vif-results}の「未評価」は0や欠損データを意味しない。
+表は固定測定配置の結果であり、1000 ShotにわたるVIFの平均値ではない。
+
+\begin{table}[htbp]
+\centering
+\caption{VIF選択結果の記入欄。項数は切片を含む。}
+\label{tab:vif-results}
+\small
+\begin{tabular}{llccc}
+\toprule
+基底 & 軸 & 削減前項数 & 削減後項数 & 最大VIF：前／後\\
+\midrule
+A15 & X & 7 & \todo & \todo\\
+A15 & Y & 8 & \todo & \todo\\
+N20 & X & 7 & \todo & \todo\\
+N20 & Y & 13 & \todo & \todo\\
+\bottomrule
+\end{tabular}
+\end{table}
+採用$k$番号、削除順序、階数、条件数およびしきい値未達の有無を追記する。
+N20のVIFが大きい場合も、メーカーの装置性能ではなく、指定した点配置と基底の組合せの性質として解釈する。
+
+\subsection{提案手法の有効性}
+表\ref{tab:performance}をA15/A15-V、N20/N20-Vの各組合せについて記入する。
+E0、E1、E2および密・疎を分け、軸別RMSEの平均、中央値、対応差の95\%信頼区間を併記する。
+比較条件を省略して最良値だけを示さない。
+
+\begin{table}[htbp]
+\centering
+\caption{回帰性能の記入様式。基底・誤差条件・密疎条件ごとに作成する。}
+\label{tab:performance}
+\small
+\begin{tabular}{lcccc}
+\toprule
+手法 & RMSE X [nm] & RMSE Y [nm] & 境界最大 [nm] & 失敗数\\
+\midrule
+OLS & \todo & \todo & \todo & \todo\\
+L1 & \todo & \todo & \todo & \todo\\
+L2 & \todo & \todo & \todo & \todo\\
+Huber & \todo & \todo & \todo & \todo\\
+Huber + L1 & \todo & \todo & \todo & \todo\\
+Huber + L2 & \todo & \todo & \todo & \todo\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+検証する仮説と必要な比較を表\ref{tab:hypotheses}に示す。
+統計的な差だけでなく、nm単位での改善量、悪化する条件、表現不足の下限も報告する。
+
+\begin{table}[htbp]
+\centering
+\caption{事前仮説と判定に必要な比較。現時点ではすべて未評価。}
+\label{tab:hypotheses}
+\begin{tabularx}{\linewidth}{lXX}
+\toprule
+仮説 & 内容 & 比較\\
+\midrule
+H1 & L1でも事前の項削減が有効 & 同じ基底・損失・L1強度で、全項とVIF削減後を比較。\\
+H2 & 項削減後はL2がL1より有効 & 同じ基底・削減状態・損失でL1とL2を比較。固定値に限定して判定。\\
+H3 & ロバスト回帰の効果が大きい & 同じ基底・削減状態・罰則で二乗損失とHuberを比較し、VIF・正則化の対応する改善量と比較。\\
+\bottomrule
+\end{tabularx}
+\end{table}
+複数要素を同時に変更した最良手法同士の比較だけでは、どの要素が効いたか分離できない。
+特にH3は、E1とE2を分け、異常値の有無による効果の変化を示して評価する。
+
+\section{考察}
+\subsection{L1正則化でも事前に項を削減する意義}
+L1は不要項を0にできるが、強く相関した複数項から常に同じ項を選ぶとは限らない。
+測定ノイズの小さな変化で採用項が入れ替わると、係数の継続監視や装置入力の安定性が損なわれうる。
+VIF選択で推定しにくい自由度を事前に減らすことは、この変動を抑える可能性がある。
+
+一方、VIFだけでは真の歪みへの寄与を識別できない。
+必要な項を除けば、L1だけを用いる場合より未測定位置の残差が増える。
+したがって「できるだけ削除する」とは、項数を最小化することではなく、
+必要な補正自由度と独立評価の性能を保った範囲で、冗長な項を減らすことと解釈する。
+
+\subsection{項削減後にL2が有効となる条件}
+項選択によって不要な自由度を十分に除けた場合、残った係数を0にする必要性は小さくなる。
+小さいが意味をもつ複数の歪み成分を残しながら係数を縮小するL2は、この状況に適合する可能性がある。
+ただし、選択後にも不要項が多い場合や、真の信号が$k$基底で疎な場合にはL1が有利になりうる。
+正則化の優劣は、信号の構造、測定配置、誤差尺度および固定強度に依存する。
+
+\subsection{ロバスト回帰の効果と限界}
+正則化は係数全体に罰則を与えるため、少数の異常観測を直接識別するものではない。
+Huber損失は大残差の影響を抑えるため、E2では効果が大きくなる可能性がある。
+他方、E1のような正規誤差だけの条件では、二乗損失が統計的効率で有利になる場合がある。
+また、実際の高次歪みをモデルが表現できずに生じた大残差を抑えると、必要な補正を弱める可能性がある。
+E0の表現不足、境界残差、重みの分布を確認して解釈する。
+
+\subsection{実験から実工程へ適用する際の課題}
+本実験の真値は合成多項式であり、レチクル、レンズ加熱、ウェハ変形などの
+発生機構を再現した物理モデルではない。
+さらに、メーカー公開例のA15とN20は同じ関数空間をもたない。
+メーカー間のRMSE差には表現不足が含まれ、回帰手法の良否と区別する必要がある。
+
+実工程では、測定の繰返し再現性、マークの系統誤差、装置の補正可能範囲、
+補正量の上限、レシピ更新周期、ロットをまたぐ変動を確認する必要がある。
+同一ウェハ・同一時刻・同一Shot座標・同一Mark座標の重複測定はX・Y別に平均する。
+実データでの検証はウェハやロット単位で分け、同じ測定の重複が学習と評価へ混入しないようにする。
+本稿の理想補正残差が改善しても、それだけで実機の歩留まり改善を実証したことにはならない。
+
+\section{結論}
+本稿では、Shot高次OVL補正を対象に、VIFによる項選択、Huber損失によるロバスト回帰、
+L1・L2正則化を組み合わせる方法と、1000通りの合成歪みによる評価計画を整理した。
+ASML公開論文の15項モデルとNikon公開特許の20項モデルを明示し、
+測定誤差、共線性、異常値、表現不足を分けて評価する構成とした。
+
+実験で検証する結論は、次の3点である。
+\begin{enumerate}
+ \item \textbf{L1正則化を用いる場合でも、必要な補正自由度を保った範囲で、冗長な$k$パラメータを事前に削減することが有効か。}
+ \item \textbf{事前削減後は、指定した固定ハイパーパラメータの条件で、L1よりL2正則化が有効か。}
+ \item \textbf{異常値を含む条件では、ロバスト回帰による改善が大きいか。}
+\end{enumerate}
+現時点では数値実験を未実施であり、これらの優位性は確定していない。
+実験後は、仮説を支持した条件と支持しなかった条件を示し、結論を実際の結果に合わせて確定する。
+
+\section*{謝辞}
+\addcontentsline{toc}{section}{謝辞}
+本検討への協力者・所属・支援内容を確認後に記載する。
+% 実在する協力者と支援内容に置き換えてください。
+
+\phantomsection
+\addcontentsline{toc}{section}{参考文献}
+\begingroup
+\small
+\begin{thebibliography}{99}
+% 文献は本文中の初出順です。ローカル文献の対応はREADME.mdに記載します。
+\bibitem{katz2026}
+S. Katz et al., ``Optical overlay metrology challenges in next-gen semiconductor nodes,''
+\textit{Proc. SPIE}, 13981, 139811A, 2026.
+\url{https://doi.org/10.1117/12.3090568}.
+
+\bibitem{klein2026}
+D. Klein and N. Gutman, ``Overlay metrology performance specification challenge entering the sub-nanometer overlay era,''
+\textit{Proc. SPIE}, 13981, 139813L, 2026.
+\url{https://doi.org/10.1117/12.3090660}.
+
+\bibitem{nicolas2020}
+B. Duclaux, M. Gatefait, O. Mermet, and J.-D. Chapon,
+``Run to run and model variability of overlay high order process corrections for mean intrafield signatures,''
+\textit{Proc. SPIE}, 11325, 113251K, 2020.
+\url{https://doi.org/10.1117/12.2551062}.
+
+\bibitem{cherry2025}
+C. Ehrlich, P. Groeger, U. Denker, S. Boese, and S. Jung,
+``Cherry-picking: automated model term selection for precise overlay and CD process control,''
+\textit{Proc. SPIE}, 13426, 134260U, 2025.
+\url{https://doi.org/10.1117/12.3051064}.
+
+\bibitem{ju2016}
+J. Ju et al., ``Application of overlay modeling and control with Zernike polynomials in an HVM environment,''
+\textit{Proc. SPIE}, 9778, 977825, 2016.
+\url{https://doi.org/10.1117/12.2219739}.
+
+\bibitem{magklaras2024}
+A. Magklaras, C. Gogos, P. Alefragis, and A. Birbas,
+``Enhancing Parameters Tuning of Overlay Models with Ridge Regression: Addressing Multicollinearity in High-Dimensional Data,''
+\textit{Mathematics}, 12(20), 3179, 2024.
+\url{https://doi.org/10.3390/math12203179}.
+
+\bibitem{huang2009}
+C. Y. Huang et al., ``Using Intra-Field High Order Correction to Achieve Overlay Requirement beyond Sub-40nm Node,''
+\textit{Proc. SPIE}, 7272, 72720I, 2009.
+\url{https://doi.org/10.1117/12.813628}.
+
+\bibitem{nikon2010}
+株式会社ニコン（出願人），沖田晋一（発明者），
+「アライメント方法、露光方法及び露光装置、デバイス製造方法、並びに露光システム」，
+公開特許JP2010186918A，2010年8月26日，
+段落[0070]--[0072]，式(3)(4)．
+\url{https://patents.google.com/patent/JP2010186918A/ja}.
+
+\bibitem{nistvif}
+NIST, ``Variance Inflation Factors,'' \textit{Dataplot Reference Manual}.
+\url{https://www.itl.nist.gov/div898/software/dataplot/refman2/auxillar/vif.htm}
+（参照日：2026年9月13日）.
+
+\bibitem{huber1964}
+P. J. Huber, ``Robust Estimation of a Location Parameter,''
+\textit{The Annals of Mathematical Statistics}, 35(1), 73--101, 1964.
+\url{https://doi.org/10.1214/aoms/1177703732}.
+
+\bibitem{hoerl1970}
+A. E. Hoerl and R. W. Kennard, ``Ridge Regression: Biased Estimation for Nonorthogonal Problems,''
+\textit{Technometrics}, 12(1), 55--67, 1970.
+\url{https://doi.org/10.1080/00401706.1970.10488634}.
+
+\bibitem{tibshirani1996}
+R. Tibshirani, ``Regression Shrinkage and Selection Via the Lasso,''
+\textit{Journal of the Royal Statistical Society: Series B}, 58(1), 267--288, 1996.
+\url{https://doi.org/10.1111/j.2517-6161.1996.tb02080.x}.
+\end{thebibliography}
+\endgroup
+\end{document}

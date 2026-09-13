@@ -1,0 +1,22 @@
+# LaTeX build files
+*.aux
+*.log
+*.toc
+*.out
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+
+# Only the compiled report is distributed; source-paper PDFs stay local.
+*.pdf
+!/main.pdf
+
+# Local temporary files
+.DS_Store
+tmp/
+.env
+.env.*
